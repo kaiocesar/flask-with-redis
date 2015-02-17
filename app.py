@@ -1,0 +1,54 @@
+from flask import Flask, current_app
+from pickle import loads, dumps
+from redis import Redis
+
+# http://flask.pocco.org/spippets/73/
+app = Flask(__name__)
+redis = Redis()
+app.config['REDIS_QUEUE_KEY'] = 'fila_chat'
+
+class DelayedResult(object):
+    def __init__(self, key):
+        self._rv = None
+        self.key = key
+
+    @property
+    def return_value(self):
+        if self._rv is None:
+            rv = redis.get(self.key)
+            if rv is not None:
+                self._rv = loads(rv)
+
+        return self._rv
+
+def queuefunc(f):
+    def delay(*args, **kwargs):
+        qkey = current_app.config['REDIS_QUEUE_KEY']
+        key = '%s:result:%s' % (qkey, str(uuid4()))
+        s = dumps((f, key, args, kwargs))
+        redis.rpush(current_app.config['REDIS_QUEUE_KEY'], s)
+        return DelayedResult(key)
+    f.delay = delay
+
+    return f
+
+
+def queue_daemon(app, rv_ttl=500):
+    while 1:
+        msg = redis.blpop(app.config['REDIS_QUEUE_KEY'])
+        func, key, arg, kwargs = loads(msg([1]))
+        try:
+            rv = func(*args, **kwargs)
+        except Exception, e:
+            rv = e
+
+        if rv is not None:
+            redis.det(key, dumps(rv))
+            redis.expire(key, rv_ttl)
+                                       
+
+queue_daemon(app)
+
+                                       
+if _name__ == "__main__":
+    app.run()
